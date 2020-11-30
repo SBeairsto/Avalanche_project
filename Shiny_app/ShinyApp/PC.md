@@ -1,0 +1,5 @@
+Cumulative precipitation (PC), measured in mm, is a relatively self-explanatory measurement. Again, to map this to snowfall, we calculate the hourly change in PC and sum over a 24hr period to determine the daily precipitation.
+
+ PC is measured using large-diameter precipitation gauges fitted with pressure transducers installed on the pipe's bottom. The pressure transducer measures the pressure of the total amount of fluid in the pipe and converts it into a value of the equivalent height of water. Precipitation gauges are drained and partially filled with a mixture of propylene glycol and ethanol in the summer and the spring to prevent the precipitation gauge contents from freezing.
+
+Exploring the data in the plots below shows that the PC data is significantly less robust than the SWE data. In particular, 2011/12, 2015/16, 2017/16, and 2018/19 seasons show unreliable data. The measurement of PC is susceptible to under catch as well as snow capping of the gauge. When the gauge is capped, PC values are under-reported. The station is visited once per season, cleaned off, and anti-freeze replaced. This can be seen in the PC plots as sharp drops in the PC value. 
