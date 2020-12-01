@@ -1,0 +1,186 @@
+---
+title: "Data prep"
+output: html_notebook
+---
+
+This notebook imports and amalgamates temperatures, SWE, and avi danger ratings
+
+```{r}
+library("zoo")
+library("tidyverse")
+library("caret")
+library("caTools")
+library("activityCounts")
+library("lubridate")
+```
+
+```{r}
+#Import avi danger ratings, these were scraped from the AVI Canada API for the 
+#sea-to-sky corridor
+Danger <- read.csv("raw_data/danger_ratings.csv")
+names(Danger)[1] <- "date"
+names(Danger)[2] <- "danger_rating"
+Danger$date <- as.POSIXct(Danger$date,format="%Y-%m-%d",tz="GMT")
+#filter out the -1 garbage from the danger ratings
+Danger <- filter(Danger, danger_rating != -1)
+
+#import SWE data
+
+#Nostetuko data
+Nos_swe_data <- read.csv("cleaned_data/Nos_SWE_cleaned.csv")
+Nos_swe_data$date <- as.POSIXct(Nos_swe_data$date,format="%Y-%m-%d",tz="GMT")
+
+Nos_temps <- read.csv("raw_data/Nos_data/Nos_Temps.csv")
+names(Nos_temps)[1] <- "date"
+names(Nos_temps)[2] <- "nos_temp"
+Nos_temps <- Nos_temps %>% select(date,nos_temp)
+Nos_temps$nos_temp <- as.numeric(Nos_temps$nos_temp)
+Nos_temps$date <- as.POSIXct(Nos_temps$date,format="%Y-%m-%d %H:%M:%S",tz="GMT")
+
+#Squamish data
+Squam_swe_data <- read.csv("cleaned_data/Squam_SWE_cleaned.csv")
+Squam_swe_data$date <- as.POSIXct(Squam_swe_data$date,format="%Y-%m-%d",tz="GMT")
+
+Squam_temps <- read.csv("raw_data/Squam_data/Squam_Temps.csv")
+names(Squam_temps)[1] <- "date"
+names(Squam_temps)[2] <- "squam_temp"
+Squam_temps <- Squam_temps %>% select(date,squam_temp)
+Squam_temps$squam_temp <- as.numeric(Squam_temps$squam_temp)
+Squam_temps$date <- as.POSIXct(Squam_temps$date,format="%Y-%m-%d %H:%M:%S",tz="GMT")
+
+
+#Join the SWE data with the danger ratings
+Avi_data <- left_join(Danger, Squam_swe_data)
+Avi_data <- left_join(Avi_data, Nos_swe_data)
+
+```
+
+```{r}
+#scale the precipitation data
+Avi_data$swe_squam <- scale(Avi_data$swe_squam)
+Avi_data$daily_tot_precip_squam<- scale(Avi_data$daily_tot_precip_squam)
+Avi_data$two_day_tot_precip_squam<- scale(Avi_data$two_day_tot_precip_squam)
+Avi_data$three_day_tot_precip_squam <- scale(Avi_data$three_day_tot_precip_squam)
+
+Avi_data$swe_nos <- scale(Avi_data$swe_nos)
+Avi_data$daily_tot_precip_nos<- scale(Avi_data$daily_tot_precip_nos)
+Avi_data$two_day_tot_precip_nos<- scale(Avi_data$two_day_tot_precip_nos)
+Avi_data$three_day_tot_precip_nos <- scale(Avi_data$three_day_tot_precip_nos)
+
+
+
+colSums(is.na(Avi_data))
+
+
+```
+
+
+```{r}
+#first step with the temperature data, we filter out any crazy data, and then check for NA values
+Nos_temps <-filter(Nos_temps,(nos_temp < 50 & nos_temp > -50))
+Squam_temps <-filter(Squam_temps,(squam_temp < 50 & squam_temp > -50))
+
+colSums(is.na(Nos_temps))
+colSums(is.na(Squam_temps))
+colSums(is.na(Danger))
+```
+looks good
+
+
+```{r}
+
+#Select data window you want to work with, we just use the full window of avi danger ratings
+Squam_data_window <- Squam_temps[Squam_temps$date >= as.POSIXct("2011-11-10") & Squam_temps$date <= as.POSIXct("2019-09-30"),]
+
+
+#calc the min, mean and max temp over 1,2, and 3 days
+#Squam_Data_window$squamish_temp <- scale(Squam_Data_window$squamish_temp)
+Squam_data_window$daily_max_temp_squam  <- runmax(Squam_data_window$squam_temp, 24, align = c("right"))
+Squam_data_window$daily_min_temp_squam  <- runmin(Squam_data_window$squam_temp, 24, align = c("right"))
+Squam_data_window$daily_mean_temp_squam  <- runmean(Squam_data_window$squam_temp,24,align =  c("right"))
+Squam_data_window$two_day_max_temp_squam  <- runmax(Squam_data_window$squam_temp, 48, align = c("right"))
+Squam_data_window$two_day_min_temp_squam  <- runmin(Squam_data_window$squam_temp, 48, align = c("right"))
+Squam_data_window$two_day_mean_temp_squam  <- runmean(Squam_data_window$squam_temp,48,align =  c("right"))
+Squam_data_window$three_day_max_temp_squam  <- runmax(Squam_data_window$squam_temp, 72, align = c("right"))
+Squam_data_window$three_day_min_temp_squam <- runmin(Squam_data_window$squam_temp, 72, align = c("right"))
+Squam_data_window$three_day_mean_temp_squam  <- runmean(Squam_data_window$squam_temp,72,align =  c("right"))
+
+#We then drop the temperature feature, as the temp at 11pm each day is not of any particular interest to us
+Squam_data_window <- Squam_data_window %>% select(-c(squam_temp))
+
+#here we filter to only take the values at 11pm, this will be our "daily" value
+Squam_data_window <- subset(Squam_data_window, hour(date)==23)
+
+#here we drop the hour label as all times are = 9pm
+Squam_data_window$date <- gsub(x=Squam_data_window$date,pattern=" 23:00",replacement="",fixed=T)
+#rite.csv(SWE_totals_daily,"SWE_totals.csv", row.names = FALSE)
+
+#Make sure the data two data frames have same date format
+Squam_data_window$date <- as.POSIXct(Squam_data_window$date,format="%Y-%m-%d",tz="GMT")
+```
+
+```{r}
+#Select data window you want to work with, we just use the full window of avi danger ratings
+Nos_data_window <- Nos_temps[Nos_temps$date >= as.POSIXct("2011-11-10") & Nos_temps$date <= as.POSIXct("2019-09-30"),]
+
+
+#calc the min, mean and max temp over 1,2, and 3 days
+
+#Nos_Data_window$nos_temp <- scale(Nos_Data_window$nos_temp)
+Nos_data_window$daily_max_temp_nos  <- runmax(Nos_data_window$nos_temp, 24, align = c("right"))
+Nos_data_window$daily_min_temp_nos  <- runmin(Nos_data_window$nos_temp, 24, align = c("right"))
+Nos_data_window$daily_mean_temp_nos  <- runmean(Nos_data_window$nos_temp,24,align =  c("right"))
+Nos_data_window$two_day_max_temp_nos  <- runmax(Nos_data_window$nos_temp, 48, align = c("right"))
+Nos_data_window$two_day_min_temp_nos  <- runmin(Nos_data_window$nos_temp, 48, align = c("right"))
+Nos_data_window$two_day_mean_temp_nos  <- runmean(Nos_data_window$nos_temp,48,align =  c("right"))
+Nos_data_window$three_day_max_temp_nos  <- runmax(Nos_data_window$nos_temp, 72, align = c("right"))
+Nos_data_window$three_day_min_temp_nos <- runmin(Nos_data_window$nos_temp, 72, align = c("right"))
+Nos_data_window$three_day_mean_temp_nos  <- runmean(Nos_data_window$nos_temp,72,align =  c("right"))
+
+#We then drop the temperature feature, as the temp at 11pm each day is not of any particular interest to us
+Nos_data_window <- Nos_data_window %>% select(-c(nos_temp))
+
+#here we filter to only take the values at 11pm, this will be our "daily" value
+Nos_data_window <- subset(Nos_data_window, hour(date)==23)
+
+#here we drop the hour label as all times are = 9pm
+Nos_data_window$date <- gsub(x=Nos_data_window$date,pattern=" 23:00",replacement="",fixed=T)
+#rite.csv(SWE_totals_daily,"SWE_totals.csv", row.names = FALSE)
+
+#Make sure the data two data frames have same date format
+Nos_data_window$date <- as.POSIXct(Nos_data_window$date,format="%Y-%m-%d",tz="GMT")
+```
+
+```{r}
+#Import Mt. Cayley wind data (already normalized)
+Cayley_wind <- read.csv("cleaned_data/cayley_wind_normed.csv")
+names(Cayley_wind)[2] <- "daily_avg_wind"
+names(Cayley_wind)[3] <- "wind_max_wind"
+names(Cayley_wind)[4] <- "wind_avg_dir"
+
+#calulate feature values for past 2 and 3 days
+Cayley_wind$two_day_mean_wind <- runmean(Cayley_wind$wind_daily_avg, 2, align = c("right"))
+Cayley_wind$two_day_max_wind <-  runmax(Cayley_wind$wind_daily_max, 2, align = c("right"))
+Cayley_wind$three_day_mean_wind <- runmean(Cayley_wind$wind_daily_avg, 3, align = c("right"))
+Cayley_wind$three_day_max_wind <-  runmax(Cayley_wind$wind_daily_max, 3, align = c("right"))
+Cayley_wind$two_day_wind_avg_dir <- runmean(Cayley_wind$wind_avg_dir, 2, align = c("right"))
+Cayley_wind$three_day_wind_avg_dir <-  runmax(Cayley_wind$wind_avg_dir, 3, align = c("right"))
+Cayley_wind$date <- as.POSIXct(Cayley_wind$date,format="%Y-%m-%d",tz="GMT")
+```
+
+
+```{r}
+#amalgamate SWE, danger ratings and temperature data
+Avi_data <- inner_join(Avi_data, Squam_data_window)
+Avi_data <- inner_join(Avi_data, Nos_data_window)
+
+#Select only data between Nov-April. This will cut out unlikely data such as
+#several danger ratings for June. 
+Avi_data <-  filter(Avi_data, ( month(Date) < 5 | month(Date) > 10))
+```
+
+```{r}
+#finally, write out the files!
+write.csv(Avi_data,"cleaned_data/Avi_data_scaled.csv", row.names = FALSE)
+```
+

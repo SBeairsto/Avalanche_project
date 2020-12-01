@@ -1,0 +1,65 @@
+---
+title: "SVM"
+---
+
+```{r}
+library(dplyr)
+library(AppliedPredictiveModeling) 
+library(caret)
+library(ordinalForest)
+library(e1071)
+```
+
+
+Load test and train data sets. 2019 data corresponds to a test/train split
+where all 2019 data is used as the test set and 2015-2018 data is used as the 
+train set. This works out to a 20/80 split. Rand data corresponds to a random
+20/80 test/train split using seed of 42069.
+```{r}
+Train_data_2019 <- read_csv("cleaned_data/Train_data_2019.csv")
+Train_data_2019$danger_rating <- as.factor(Train_data_2019$danger_rating )
+
+Test_data_2019 <-read_csv("cleaned_data/Test_data_2019.csv")
+Test_data_2019$danger_rating <- as.factor(Test_data_2019$danger_rating )
+
+Train_data_rand <- read_csv("cleaned_data/Train_data_rand.csv")
+Train_data_rand$danger_rating <- as.factor(Train_data_rand$danger_rating )
+
+Test_data_rand <-read_csv("cleaned_data/Test_data_rand.csv")
+Test_data_rand$danger_rating <- as.factor(Test_data_rand$danger_rating )
+```
+
+
+```{r}
+#apply a gridsearch to find optimized hyperparameters for the SVM
+
+control <- tune.control(nrepeat = 3, repeat.aggregate =mean , sampling = "cross",
+                        cross = 5)
+
+obj <- tune(svm, danger_rating~., data = Train_data_2019,
+           # gamma = 0.075,
+              ranges = list(cost =seq(0.05, 5, by=0.2), gamma =seq(0.001, 0.2, by=0.005)),
+              tunecontrol = control
+             )
+  
+summary(obj)
+plot(obj)
+
+```
+
+
+```{r}
+rand_svm <- svm(danger_rating ~ ., data = Train_data_2019, cost = 1.45	, gamma = 0.016)
+preds <- predict(rand_svm, newdata = Test_data_2019)
+con<- confusionMatrix(data = preds, reference = Test_data_2019$danger_rating)
+```
+
+
+```{r}
+saveRDS(con, "svm_con_2019.rds")
+#my_model <- readRDS("model.rds")
+```
+
+
+
+

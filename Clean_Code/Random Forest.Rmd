@@ -1,0 +1,66 @@
+---
+title: "Random Forest"
+---
+
+```{r}
+library(dplyr)
+library(AppliedPredictiveModeling) 
+library(caret)
+library(ordinalForest)
+library(randomForest)
+```
+
+Load test and train data sets. 2019 data corresponds to a test/train split
+where all 2019 data is used as the test set and 2015-2018 data is used as the 
+train set. This works out to a 20/80 split. Rand data corresponds to a random
+20/80 test/train split using seed of 42069.
+```{r}
+Train_data_2019 <- read_csv("cleaned_data/Train_data_2019.csv")
+Train_data_2019$danger_rating <- as.factor(Train_data_2019$danger_rating )
+
+Test_data_2019 <-read_csv("cleaned_data/Test_data_2019.csv")
+Test_data_2019$danger_rating <- as.factor(Test_data_2019$danger_rating )
+
+Train_data_rand <- read_csv("cleaned_data/Train_data_rand.csv")
+Train_data_rand$danger_rating <- as.factor(Train_data_rand$danger_rating )
+
+Test_data_rand <-read_csv("cleaned_data/Test_data_rand.csv")
+Test_data_rand$danger_rating <- as.factor(Test_data_rand$danger_rating )
+```
+
+Define custom hyperparamter optimization search
+```{r}
+customRF <- list(type = "Classification", library = "randomForest", loop = NULL)
+customRF$parameters <- data.frame(parameter = c("mtry", "ntree"), class = rep("numeric", 2), label = c("mtry", "ntree"))
+customRF$grid <- function(x, y, len = NULL, search = "grid") {}
+customRF$fit <- function(x, y, wts, param, lev, last, weights, classProbs, ...) {
+  randomForest(x, y, mtry = param$mtry, ntree=param$ntree, ...)
+}
+customRF$predict <- function(modelFit, newdata, preProc = NULL, submodels = NULL)
+   predict(modelFit, newdata)
+customRF$prob <- function(modelFit, newdata, preProc = NULL, submodels = NULL)
+   predict(modelFit, newdata, type = "prob")
+customRF$sort <- function(x) x[order(x[,1]),]
+customRF$levels <- function(x) x$classes
+```
+
+Find optimized hyperparameters
+```{r}
+# train model
+control <- trainControl(method="repeatedcv", number=2, repeats=1)
+tunegrid <- expand.grid(.mtry=c(1:30), .ntree=c(1000, 1500, 2000, 2500))
+custom <- train(danger_rating~., data=Train_data_rand, method=customRF, metric="Accuracy", tuneGrid=tunegrid, trControl=control)
+summary(custom)
+ggplot(custom)
+```
+
+Train and test a random forest model using optimized hyperparameters
+```{r}
+ran <- randomForest(danger_rating ~ ., data=Train_data_rand, ntree=1500,
+                              mtry = 29)
+pred <- predict(ran,Test_data_rand)
+confusionMatrix(pred,Test_data_ran$danger_rating)
+imp <- varImp(ran)
+```
+
+

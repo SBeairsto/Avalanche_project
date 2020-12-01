@@ -1,0 +1,386 @@
+---
+title: "SWE Cleaner"
+output: html_notebook
+---
+
+This notebook takes raw snow water equivalent (SWE) data and cleans it
+as well as determines the daily precipitation based on changes in SWE values.
+
+Import libraries
+```{r}
+library(data.table)
+library(plyr)
+library(readr)
+library(tidyverse)
+library(lubridate)
+library(naniar)
+library(roll)
+library(activityCounts)
+library(zoo)
+library(dplyr)
+```
+
+```{r}
+#install.packages("activityCounts")
+```
+
+
+
+First thing we do is import our data, I have put the data we are using on GitHub, but the original source is the BC government web app, https://aqrt.nrs.gov.bc.ca/Data/Map/Parameter/NoParameter/Interval/Latest. This is an awesome resource with snow and weather data from all over BC. 
+```{r}
+# Choose either the Nostetuko or Squamish data set to work with
+
+#Nostetuko River (3A22P) 
+#Raw_swe_data <- read.csv("raw_data/Nos_data/Nos_SWE.csv",header = TRUE)
+
+#If using Nostetuko data, corresponding variables will be labeled with the tag "nos"
+#tag <- "_nos"
+
+#Squamish River Upper (3A25P)
+Raw_swe_data <- read.csv("raw_data/Squam_data/Squam_SWE.csv",header = TRUE)
+
+#If using Squamish data, corresponding variables will be labeled with the tag "squam"
+tag <- "_squam"
+
+#We now drop the columns which correspond to data quality (we explore that for ourselves)
+Raw_swe_data = subset(Raw_swe_data, select = -c(X.1,X.2,X.3,X.4) )
+
+#Rename variables with descriptive names
+names(Raw_swe_data)[1] <- "date"
+names(Raw_swe_data)[2] <- "swe"
+
+#convert data to appropriate format (imported as char)
+Raw_swe_data <- transform(Raw_swe_data, swe = as.numeric(swe))
+Raw_swe_data$date <- as.POSIXct(Raw_swe_data$date,format="%Y-%m-%d %H:%M:%S",tz="GMT")
+```
+
+Now we create a data window based on dates, the raw data runs from 2003-2020, we only want a subset of that. Our full window
+runs Nov 2011 to May 2019. If you want to really see what is going on with the data cleaning, I suggest looking at a smaller window. 
+The Squamish data from 2011-11-01 to 2012-05-1 is a good window to see how the data cleaner is working.
+```{r}
+#Full window
+#Swe_window <- Raw_swe_data[Raw_swe_data$date >= as.POSIXct("2011-11-01") & Raw_swe_data$date <= as.POSIXct("2019-05-1"),]
+
+#Small window
+Swe_window<- Raw_swe_data[Raw_swe_data$date >= as.POSIXct("2011-11-01") & Raw_swe_data$date <= as.POSIXct("2012-05-1"),]
+
+#Here we filter out any ridiculous SWE values
+Swe_window <-  filter(Swe_window, (swe < 10000 & swe >-10000))
+
+#It is now a good idea to look at your data and see what you are working with
+ggplot(Swe_window, aes(date)) + 
+  geom_line(aes(y = swe, colour = "SWE")) 
+```
+Bad data generally looks like unlikely spikes and gaps in the data. First,
+we are only concerned with data between November and April as this is the 
+period with avi danger ratings. We expect off-season SWE measurements to be 
+faulty anyways. If you are looking at the Nostetuko data it has a few spikes and 
+gaps. The Squamish data has similar spikes and gaps, however, it also has a bad
+section of data from Nov 1st, 2011 to Dec 1st, 2011. To fix this, we splice on 
+a section of data from Tenquille Lake over that period, which has a very similar
+SWE profile to Squamish, with slightly lower volume. 
+
+#Splicer (APPLY TO SQUAMISH DATA ONLY)
+```{r}
+#Tenquille Lake (1D06P)
+Raw_swe_data2 <- read.csv("https://raw.githubusercontent.com/SBeairsto/Avalanche_project/main/snow_data/Ten_SWE.csv",header = TRUE)
+
+#We now drop the columns which correspond to data quality (we explore that for ourselves)
+Raw_swe_data2 = subset(Raw_swe_data2, select = -c(X.1,X.2,X.3,X.4) )
+
+#Rename variables with descriptive names
+names(Raw_swe_data2)[1] <- "date"
+names(Raw_swe_data2)[2] <- "swe"
+
+#convert data to appropriate format (imported as char)
+Raw_swe_data2 <- transform(Raw_swe_data2, swe = as.numeric(swe))
+Raw_swe_data2$date <- as.POSIXct(Raw_swe_data2$date,format="%Y-%m-%d %H:%M:%S",tz="GMT")
+
+#make the three windows to be spliced together
+Zeroth_swe_window <- Swe_window[Swe_window$date < as.POSIXct("2011-11-01"),]
+First_swe_window <- Raw_swe_data2[Raw_swe_data2$date >= as.POSIXct("2011-11-01") & Raw_swe_data2$date <= as.POSIXct("2011-12-01 19:00:00"),]
+Second_swe_window <- Swe_window[Swe_window$date >= as.POSIXct("2011-12-1 19:00:00"),]
+
+#Determine the proportion between last element of Tenquille data and first element of
+#Squamish data as we will want these two values to be equal
+prop <- Second_swe_window$swe[3]/tail(First_swe_window$swe, n=1)
+
+#scale up Tanquille data to match Squaish profile
+First_swe_window$swe <- First_swe_window$swe*prop
+
+#Finally splice the windows together and voila!
+Swe_window <- rbind(Zeroth_swe_window,First_swe_window,Second_swe_window)
+
+ggplot(Swe_window, aes(date)) + 
+  geom_line(aes(y = swe, colour = "SWE")) 
+```
+Looks good!
+#
+
+
+We now want to fill in any missing values in our time series, as we need a full
+data set to implement the next step which involves taking the time derivative of
+our data. We do this by averaging the rate of change of the variable (in this 
+case the SWE) over the missing data points, and then adding the missing 
+hourly data points increasing at a linear rate. At the moment this is only implemented for gaps 
+that are under 24hrs.
+
+# Function definition (expand markdown to define it in workspace)
+```{r}
+
+# Inputs for the function are the dataframe and the variable that you want to
+# fill in
+Missing_data_filler <- function(df,variable)
+{
+  
+  temp_df <- df
+  
+  #we then loop over the length of the variable
+  for (i in 1:(length(temp_df[,variable])-1))
+  {
+    
+    #here we check if the month is between November and April, (time frame
+    #of danger ratings). No point fixing data we wont use.
+    if ((month(temp_df[i,"date"]) < 5 | month(temp_df[i,"date"]) >10))
+    {
+      
+      #determine time difference between data points
+      dt<-(hour(temp_df[i+1,"date"])-hour(temp_df[i,"date"]))
+  
+      #correct for new days
+      if (dt < 0) dt <- dt + 24
+      
+      # condition checking if there is a gap
+      if(dt>1)
+      {
+        
+        # condition ensuring we don't try to fix gaps that are too large
+        #if(dt<24)
+        #{
+          
+          # determine hourly rate of change over the gap
+          dydt <- (temp_df[i+1,variable]-temp_df[i,variable])/dt
+          
+          # declare matrix for rows to be added
+          new_rows <- data.frame(date=POSIXct(),
+                     variable=double(),
+                     stringsAsFactors=FALSE)
+          
+          # loop over the size of the gap (in hours)
+          for (j in 1:(as.integer(dt)-1))
+          {
+            
+            #for each missing hour we add a new row with the missing hour
+            date <- c(temp_df[i,"date"]+j*60*60)
+            
+            #we determine the variable value at this time by the average
+            #rate of change of the variable over the gap
+            variable_name <- c(temp_df[i,variable] + j*dydt)
+            
+            
+            new_data <- data.frame(date,variable_name)
+            names(new_data)[2] <- variable
+            new_rows <- rbind(new_rows, new_data)
+          }
+        
+        #finally, we slide newly generated data into the gap  
+        temp_df <- rbind(temp_df[1:i,],new_rows,temp_df[-(1:i),])
+        
+        }
+      }
+    }
+  #}
+  
+  return(temp_df)
+}
+```
+#
+
+
+```{r}
+#before we apply the filling function we need to filer NAs from the data,
+#I'm struggling to do this within the function
+Swe_window <- filter(Swe_window, swe != "NA")
+
+#We can then implement the gap filler
+Swe_window <- Missing_data_filler(Swe_window,"swe")
+
+#Taking another look at the data, we see the gaps have been filled
+ggplot(Swe_window, aes(date)) + 
+  geom_line(aes(y = swe, colour = "SWE"))
+```
+
+
+
+
+We now start looking at the rate of change in our precipitation values
+as this is what is going to give us values proportional to snowfall
+
+#Here we define our derivative function (expand markdown to define it in workspace)
+```{r}
+derivative <- function(df,variable) {
+  
+  count = 0
+  dydt <- data.frame(date=POSIXct(),der_swe=double())
+  for (i in 1:(length(df[,variable])-1))
+  {
+    
+    #dy: Change in variable between data points 
+    dy <- (df[i+1,variable] - df[i,variable])
+    
+    #dt: Hours elapsed between data points
+    dt <- (hour(df[i+1,"date"])-hour(df[i,"date"]))
+    
+    #must include this step to deal with going from 23:00 to 0:00
+    if (dt < 0) dt  = dt + 24
+    
+    
+      #derivative w.r.t. time from definition of a derivative
+      dydt[i+1, "der_swe"] <- dy/dt
+      dydt[i, "date"] <- df[i,"date"]
+
+  }
+  
+  #Cant compute final derivative step, so fill with 0
+  dydt[i+1, "der_swe"] <- 0
+  dydt[i+1, "date"] <- df[i+1,"date"]
+  
+  
+return(dydt)
+}
+```
+#
+
+We then take the hourly derivative of our data. We remove any spikes in the derivative
+which would indicate erroneous data, and then re-integrate to get a smoother SWE
+```{r}
+Temp <- derivative(Swe_window,"swe")
+Swe_window <- left_join(Swe_window, Temp)
+#We can then implement the gap filler
+
+```
+
+
+```{r}
+
+#The derivatives also work as filters, with large derivatives indicating improbable
+#spikes. We filter out any spikes that would indicate precipitation at a rate greater
+#than 50mm/hr, we replace the faulty data with the average of surrounding data
+
+#loop over the derivative data
+for (i in 2:length(Swe_window$der_swe))
+{
+  if((Swe_window$der_swe[i] >50 | Swe_window$der_swe[i] < -50))
+  {
+    Swe_window$der_swe[i] <-  (Swe_window$der_swe[i+1]+Swe_window$der_swe[i-1])/2
+  }
+}
+
+
+#recalculating the SWE via integrating the derivative with spikes removed, we 
+#get a spike-less SWE vector. This is also a good test to ensure our derivative
+#function is working
+
+#This function is for integrating der_SWE values of a data window
+Integrator <- function(start,end)
+{
+  Temp <-  Swe_window[Swe_window$date >= as.POSIXct(start) & Swe_window$date < as.POSIXct(end),]
+  
+  #this step adds the appropriate constant of proportionality 
+  bar <- subset(Swe_window, date == start)
+  Temp$der_swe[1] <- bar$swe[1]
+  
+  Temp$integrated_swe <- cumsum(Temp$der_swe)
+ 
+  return(Temp) 
+}
+
+
+
+#Now there are some data jumps in off-seasons that we struggle to deal with
+#so we loop through only the avi-season for the following data
+count <- 0
+for( i in year(Swe_window$date[3]):(year(tail(Swe_window$date,n=1))-1))
+{
+  count <- count + 1
+  start <- paste(i,"-11-01",sep='')
+  end <- paste(i+1,"-05-01",sep='')
+  if(count == 1)
+  {
+    Integrated_swe <- Integrator(start,end)
+  }else
+  {
+  Integrated_swe <- rbind(Integrated_swe,Integrator(start,end))
+  }
+}
+
+#integrate over the full date-range
+#integrated_SWE <- Integrator(SWE_window[3,"Date"], tail(SWE_window$Date, n=1))
+
+#add a new variable in our data window which is the integrated SWE
+Swe_window <- left_join(Swe_window,select(Integrated_swe,c(date,integrated_swe)))
+
+#Taking another look at the data, we see the spikes have been removed
+ggplot(Swe_window, aes(date)) + 
+  geom_line(aes(y = swe, colour = "SWE"))+
+  geom_line(aes(y = der_swe, colour = "hourly derivative of SWE"))+
+  geom_line(aes(y = integrated_swe, colour = "re-integrated SWE"))
+```
+Nice, no spikes and our integrated data matches our original data
+
+
+
+
+Next we calculate the total precipitation over 1, 2 and 3 days by summing the 
+derivatives calculated previously. 
+
+```{r}
+#first, we set negative derivatives to zero, as we are not interested in snow
+#melt, only snowfall.
+Swe_window$pos_der_swe <- Swe_window$der_swe
+Swe_window$pos_der_swe[Swe_window$der_swe < 0] <- 0
+
+#We then sum rolling windows to determine total precipitation  
+Swe_window$daily_tot_precip  <- rollsum(Swe_window$pos_der_swe, 24, align = "right", fill = NA)
+Swe_window$two_day_tot_precip  <- rollsum(Swe_window$pos_der_swe, 48, align = "right", fill = NA)
+Swe_window$three_day_tot_precip <- rollsum(Swe_window$pos_der_swe, 72, align = "right", fill = NA)
+
+#Here we can look at the results
+ggplot(Swe_window, aes(date)) + 
+  geom_line(aes(y = daily_tot_precip, colour = "Daily_tot_precip")) +
+  geom_line(aes(y = two_day_tot_precip, colour = "Two_day_tot_precip"))+
+  geom_line(aes(y = three_day_tot_precip, colour = "Three_day_tot_precip"))
+```
+If you are looking at the full Squamish data set, there is a spike in 2017, but 
+this is in the off-season, so we are not going to deal with it atm
+
+Finally we select the results we want, label them appropriately,
+and then save them into a csv!
+```{r}
+#First, we replace the uncleaned SWE variable with the re-intergrated values of SWE
+Swe_window$swe <- Swe_window$integrated_swe
+
+
+Wanted_swe <- Swe_window %>% select(date,swe,daily_tot_precip,two_day_tot_precip,three_day_tot_precip)
+
+#here we filter to only take the values at 11pm, this will be our "daily" value
+Wanted_swe <- subset(Wanted_swe, hour(date)==23)
+
+#here we drop the hour label as all times are = 11pm
+Wanted_swe$date <- gsub(x=Wanted_swe$date,pattern=" 23:00:00",replacement="",fixed=T)
+
+#give the variables appropriate names based on which dataset you are looking at
+for(i in 2:length(Wanted_swe[1,]))
+{
+  names(Wanted_swe)[i] <- paste(names(Wanted_swe)[i],tag,sep='')
+}
+```
+
+```{r}
+# And finally, you can write the data out as a CSV! 
+write.csv(Wanted_swe,"cleaned_data/Nos_SWE_cleaned.csv", row.names = FALSE)
+```
+
+
+Note: This workbook was conceived to the Star Wars universe soundtrack -> https://open.spotify.com/playlist/0yDagEjoveJC0dVWBJecU2?si=hk2GYeVIQ92M7R41fnlPkg 
+

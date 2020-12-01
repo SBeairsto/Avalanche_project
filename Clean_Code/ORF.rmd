@@ -1,0 +1,74 @@
+---
+title: "R Notebook
+output: html_notebook
+---
+
+
+```{r}
+library(dplyr)
+library(AppliedPredictiveModeling) 
+library(caret)
+library(ordinalForest)
+```
+
+Load test and train data sets. 2019 data corresponds to a test/train split
+where all 2019 data is used as the test set and 2015-2018 data is used as the 
+train set. This works out to a 20/80 split. Rand data corresponds to a random
+20/80 test/train split using seed of 42069.
+```{r}
+Train_data_rand <- read_csv("cleaned_data/Train_data_rand.csv")
+Train_data_rand$danger_rating <- as.factor(Train_data_rand$danger_rating )
+
+Test_data_rand <-read_csv("cleaned_data/Test_data_rand.csv")
+Test_data_rand$danger_rating <- as.factor(Test_data_rand$danger_rating )
+```
+
+
+```{r}
+
+datatrain <- Train_data_rand
+
+#ordforres <- ordfor(depvar="danger_rating", data=datatrain, nsets=500, nbest=5, ntreeperdiv=100,
+#      ntreefinal=1000)
+#ordforres <- ordfor(depvar="danger_rating", data=datatrain, nsets=1000, ntreeperdiv=100,ntreefinal=5000, perffunction = "custom", classweights=c(1,1.5,2,2.5))
+ordforres <- ordfor(depvar="danger_rating", data=datatrain, nsets=1000, ntreeperdiv=100,ntreefinal=5000, perffunction = "equal")
+
+print(ordforres$bordersbest)
+print(ordforres$classfreq)
+
+saveRDS(ordforres, file ="ordforess.rds")
+
+print(ordforres$bordersbest)
+preds <- predict(ordforres, newdata = Test_data_rand)
+      
+        # Compare predicted values with true values:
+ of_confusion <-   confusionMatrix(data = preds$ypred, reference = Test_data_rand$danger_rating)
+
+saveRDS(of_confusion, "of_confusion.rds")
+confusionMatrix(data = preds$ypred, reference = Test_data_rand$danger_rating)
+```
+
+
+
+
+```{r}
+plot.new()
+plot.window( c(0,1), c(-1, 1) )
+
+axis(1, at=seq(0, 1, by = 0.1), pos=0)
+print(ordforres$bordersbest[1])
+lines( c(ordforres$bordersbest[1],ordforres$bordersbest[1],ordforres$bordersbest[2],ordforres$bordersbest[2]), c( -0.25, -0.5, -0.5, -0.25 ) )
+text( ordforres$bordersbest[2]/2, -0.6, 'Low' )  # the plotrix package has a function for text in a box
+
+lines( c(ordforres$bordersbest[2],ordforres$bordersbest[2],ordforres$bordersbest[3],ordforres$bordersbest[3]), c( 0.1, 0.3, 0.3, 0.1) )
+text( (ordforres$bordersbest[3]+ordforres$bordersbest[2])/2, 0.4, 'Moderate' )
+
+lines( c(ordforres$bordersbest[3],ordforres$bordersbest[3],ordforres$bordersbest[4],ordforres$bordersbest[4]), c( -0.25, -0.5, -0.5, -0.25 ) )
+text( (ordforres$bordersbest[3]+ordforres$bordersbest[4])/2, -0.6, 'Considerable' )
+
+
+lines( c(ordforres$bordersbest[4],ordforres$bordersbest[4],ordforres$bordersbest[5],ordforres$bordersbest[5]), c( 0.1, 0.3, 0.3, 0.1) )
+text( (ordforres$bordersbest[5]+ordforres$bordersbest[4])/2, 0.4, 'High' )
+
+
+```
